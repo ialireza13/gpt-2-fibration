@@ -306,3 +306,290 @@ class Block(nn.Module):
         x = x + self.attn(self.ln_1(x))
         x = x + self.mlp(self.ln_2(x))
         return x
+
+
+class CausalSelfAttentionSeparate(nn.Module):
+    """CausalSelfAttention with separate Q, K, V linear layers for independent pruning."""
+    def __init__(self, config):
+        super().__init__()
+        assert config.n_embd % config.n_head == 0
+        # Separate linear layers for query, key, and value
+        self.c_q = nn.Linear(config.n_embd, config.n_embd)
+        self.c_k = nn.Linear(config.n_embd, config.n_embd)
+        self.c_v = nn.Linear(config.n_embd, config.n_embd)
+        # output projection
+        self.c_proj = nn.Linear(config.n_embd, config.n_embd)
+
+        self.c_proj.dummy_flag = 1
+        self.n_head = config.n_head
+        self.n_embd = config.n_embd
+        self.register_buffer(
+            "bias",
+            torch.tril(torch.ones(config.block_size, config.block_size)).view(
+                1, 1, config.block_size, config.block_size
+            ),
+        )
+
+    def forward(self, x):
+        B, T, C = x.size()  # batch size, sequence length, embedding dimension
+        # calculate query, key, values separately
+        q = self.c_q(x)  # (B, T, n_embd)
+        k = self.c_k(x)  # (B, T, n_embd)
+        v = self.c_v(x)  # (B, T, n_embd)
+        
+        # Reshape for multi-head attention
+        k = k.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        q = q.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        v = v.view(B, T, self.n_head, C // self.n_head).transpose(
+            1, 2
+        )  # (B, nh, T, hs)
+        
+        # this uses flash-attention: way faster (especially on GPU)
+        y = F.scaled_dot_product_attention(q, k, v, is_causal=True)
+
+        y = y.transpose(1, 2).contiguous().view(B, T, C)
+        y = self.c_proj(y)
+        return y
+
+
+class BlockSeparate(nn.Module):
+    def __init__(self, config):
+        super().__init__()
+        self.ln_1 = nn.LayerNorm(config.n_embd)
+        self.attn = CausalSelfAttentionSeparate(config)
+        self.ln_2 = nn.LayerNorm(config.n_embd)
+        self.mlp = MLP(config)
+
+    def forward(self, x):
+        x = x + self.attn(self.ln_1(x))
+        x = x + self.mlp(self.ln_2(x))
+        return x
+
+
+class GPTSeparateAttention(nn.Module):
+    """GPT model with separate Q, K, V attention layers for independent pruning."""
+    def __init__(self, config):
+        super().__init__()
+        self.config = config
+
+        self.transformer = nn.ModuleDict(
+            dict(
+                wte=nn.Embedding(config.vocab_size, config.n_embd),
+                wpe=nn.Embedding(config.block_size, config.n_embd),
+                h=nn.ModuleList([BlockSeparate(config) for _ in range(config.n_layer)]),
+                ln_f=nn.LayerNorm(config.n_embd),
+            )
+        )
+        self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+
+        # weight sharing scheme
+        self.transformer.wte.weight = self.lm_head.weight
+
+        self.apply(self._init_weights)
+
+    def _init_weights(self, module):
+        if isinstance(module, nn.Linear):
+            std = 0.02
+            # in the original paper they scale the weights in the last projection
+            # by the number of layers (sqrt) to control the variance of the output
+            if hasattr(module, "dummy_flag"):
+                std *= (2 * self.config.n_layer) ** -0.5
+            torch.nn.init.normal_(module.weight, mean=0.0, std=std)
+            if module.bias is not None:
+                torch.nn.init.zeros_(module.bias)
+        elif isinstance(module, nn.Embedding):
+            torch.nn.init.normal_(module.weight, mean=0.0, std=0.02)
+
+    def configure_optimizers(self, weight_decay=0.1, learning_rate=3e-4, device="cpu"):
+        # start with all the candidate parameters
+        param_dict = {pn: p for pn, p in self.named_parameters()}
+        param_dict = {pn: p for pn, p in param_dict.items()}
+        # create optim groups. Any parameters that is 2D will be weight decayed,
+        # otherwise not
+        decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
+        nodecay_params = [p for n, p in param_dict.items() if p.dim() < 2]
+        optim_groups = [
+            {"params": decay_params, "weight_decay": weight_decay},
+            {"params": nodecay_params, "weight_decay": 0.0},
+        ]
+        num_decay_params = sum(p.numel() for p in decay_params)
+        num_nodecay_params = sum(p.numel() for p in nodecay_params)
+        print(f"[GPTSeparateAttention] Number of parameters with weight decay: {num_decay_params:,}")
+        print(
+            f"[GPTSeparateAttention] Number of parameters without weight decay: {num_nodecay_params:,}"
+        )
+        fused_available = "fused" in inspect.signature(torch.optim.AdamW).parameters
+        use_fused = fused_available and "cuda" in device
+        # this avoids iterating over the parameters if using GPU and if option is
+        # available
+        print(f"\tUsing fused AdamW: {use_fused}")
+        optimizer = torch.optim.AdamW(
+            optim_groups, lr=learning_rate, betas=(0.9, 0.95), eps=1e-8, fused=use_fused
+        )
+        return optimizer
+
+    def forward(self, idx, targets=None):
+        # idx is of shape (B, T)
+        B, T = idx.size()
+
+        assert (
+            T <= self.config.block_size
+        ), "Cannot forward sequence of length %d, block size is only %d" % (
+            T,
+            self.config.block_size,
+        )
+
+        # forward the token and position embeddings
+        pos = torch.arange(0, T, dtype=torch.long, device=idx.device)
+        pos_emb = self.transformer.wpe(pos)[None, :, :]  # (1, T, n_embd)
+        tok_emb = self.transformer.wte(idx)  # (B, T, n_embd)
+        x = tok_emb + pos_emb
+
+        for block in self.transformer.h:
+            x = block(x)
+
+        x = self.transformer.ln_f(x)  # (B, T, n_embd)
+        logits = self.lm_head(x)  # (B, T, vocab_size)
+        loss = None
+        if targets is not None:
+            loss = F.cross_entropy(
+                logits.view(-1, logits.size(-1)), targets.view(-1), ignore_index=-1
+            )
+        return logits, loss
+
+    def sample_sequence(
+        self,
+        prompt,
+        data_manger,
+        encoder,
+        num_return_sequences,
+        max_length,
+        top_priority=50,
+        stream=True,
+    ):
+        self.eval()
+
+        # encode prompt and reshape it into the desired shape
+        tokens = encoder.encode(prompt)
+        tokens = torch.tensor(tokens, dtype=torch.long)
+        tokens = tokens.unsqueeze(0).repeat(num_return_sequences, 1)
+
+        xgen = tokens.to(data_manger.device)
+
+        # create generator to sample from output
+        sample_rng = torch.Generator(device=data_manger.device)
+        sample_rng.manual_seed(42 + data_manger.ddp_rank)
+        if stream:
+            for seq_idx in range(num_return_sequences):
+                current_xgen = tokens[seq_idx : seq_idx + 1].to(
+                    data_manger.device
+                )  # Start with one sequence
+
+                # Decode and print initial prompt
+                initial_decoded_prompt = encoder.decode(current_xgen[0].tolist())
+                print(
+                    initial_decoded_prompt, end="", flush=True
+                )  # Print without newline and flush
+
+                while current_xgen.size(1) < max_length:
+                    with torch.no_grad():
+                        logits, _ = self.forward(current_xgen)
+                        # only keep the last prediction
+                        logits = logits[:, -1, :]
+                        probs = F.softmax(logits, dim=-1)
+                        topk_probs, topk_indices = torch.topk(
+                            probs, top_priority, dim=-1
+                        )
+                        ix = torch.multinomial(
+                            topk_probs, num_samples=1, generator=sample_rng
+                        )
+                        xcol = torch.gather(topk_indices, dim=-1, index=ix)
+                        current_xgen = torch.cat((current_xgen, xcol), dim=1)
+
+                        # Decode and print the newly generated token
+                        new_token = xcol[0].item()  # Get the single new token
+                        decoded_token = encoder.decode([new_token])  # Decode it
+                        print(decoded_token, end="", flush=True)  # Print and flush
+                print("\n")  # Add a newline after each sequence is complete.
+        else:
+            while xgen.size(1) < max_length:
+                with torch.no_grad():
+                    logits, _ = self.forward(xgen)
+                    # only keep the last prediction
+                    logits = logits[:, -1, :]
+                    probs = F.softmax(logits, dim=-1)
+                    topk_probs, topk_indices = torch.topk(probs, top_priority, dim=-1)
+                    ix = torch.multinomial(
+                        topk_probs, num_samples=1, generator=sample_rng
+                    )
+                    xcol = torch.gather(topk_indices, dim=-1, index=ix)
+                    xgen = torch.cat((xgen, xcol), dim=1)
+
+            for i in range(num_return_sequences):
+                tokens = xgen[i, :max_length].tolist()
+                # decode tokens back to vocabulary
+                decoded = encoder.decode(tokens)
+                print(f"rank {data_manger.ddp_rank} sample {i}: {decoded}")
+
+    @classmethod
+    def from_gpt(cls, gpt_model):
+        """
+        Convert a GPT model to GPTSeparateAttention by splitting the QKV attention weights.
+        
+        Args:
+            gpt_model: An instance of GPT class
+            
+        Returns:
+            GPTSeparateAttention model with weights copied from gpt_model
+        """
+        config = gpt_model.config
+        new_model = cls(config)
+        
+        # Get state dicts
+        old_sd = gpt_model.state_dict()
+        new_sd = new_model.state_dict()
+        
+        # Copy all non-attention weights
+        for key in old_sd.keys():
+            if "attn.c_attn" not in key:
+                if key in new_sd:
+                    new_sd[key].copy_(old_sd[key])
+        
+        # Convert attention weights: split c_attn into c_q, c_k, c_v
+        for layer_idx in range(config.n_layer):
+            # Get the original combined QKV weights and biases
+            old_attn_key = f"transformer.h.{layer_idx}.attn.c_attn.weight"
+            old_attn_bias_key = f"transformer.h.{layer_idx}.attn.c_attn.bias"
+            
+            if old_attn_key in old_sd:
+                old_weight = old_sd[old_attn_key]  # Shape: (n_embd * 3, n_embd)
+                # Split into Q, K, V (each of shape (n_embd, n_embd))
+                q_weight = old_weight[0:config.n_embd, :]
+                k_weight = old_weight[config.n_embd:2*config.n_embd, :]
+                v_weight = old_weight[2*config.n_embd:3*config.n_embd, :]
+                
+                # Copy to new model
+                new_sd[f"transformer.h.{layer_idx}.attn.c_q.weight"].copy_(q_weight)
+                new_sd[f"transformer.h.{layer_idx}.attn.c_k.weight"].copy_(k_weight)
+                new_sd[f"transformer.h.{layer_idx}.attn.c_v.weight"].copy_(v_weight)
+            
+            if old_attn_bias_key in old_sd:
+                old_bias = old_sd[old_attn_bias_key]  # Shape: (n_embd * 3,)
+                # Split into Q, K, V biases (each of shape (n_embd,))
+                q_bias = old_bias[0:config.n_embd]
+                k_bias = old_bias[config.n_embd:2*config.n_embd]
+                v_bias = old_bias[2*config.n_embd:3*config.n_embd]
+                
+                # Copy to new model
+                new_sd[f"transformer.h.{layer_idx}.attn.c_q.bias"].copy_(q_bias)
+                new_sd[f"transformer.h.{layer_idx}.attn.c_k.bias"].copy_(k_bias)
+                new_sd[f"transformer.h.{layer_idx}.attn.c_v.bias"].copy_(v_bias)
+        
+        # Load the converted state dict
+        new_model.load_state_dict(new_sd)
+        
+        return new_model
