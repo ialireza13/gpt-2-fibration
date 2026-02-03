@@ -45,11 +45,11 @@ def evaluate_validation(step, model, data_manager, log_manager):
         log_manager.to_file(step, "val", val_loss_accum)
 
 
-def save_model(raw_model, log_manager):
-    checkpoint_path = os.path.join(log_manager.dir, f"model.pt")
+def save_model(model, log_manager, filename):
+    checkpoint_path = os.path.join(log_manager.dir, f"{filename}.pt")
     checkpoint = {
-        "model": raw_model.state_dict(),
-        "config": raw_model.config,
+        "model": model.state_dict(),
+        "config": model.config,
         "step": step,
     }
     torch.save(checkpoint, checkpoint_path)
@@ -92,9 +92,9 @@ if __name__ == "__main__":
         torch.compile(model)
     if dm.ddp:
         model = DDP(model, device_ids=[dm.ddp_local_rank])
-    raw_model = model.module if dm.ddp else model
+    model = model.module if dm.ddp else model
 
-    optimizer = raw_model.configure_optimizers(
+    optimizer = model.configure_optimizers(
         weight_decay=0.1, learning_rate=3e-4, device=dm.device
     )
 
@@ -122,7 +122,7 @@ if __name__ == "__main__":
             evaluate_validation(step, model, dm, lm)
 
         if step > 0 and (step % config.model_output_step == 0 or last_step):
-            save_model(raw_model, lm)
+            save_model(model, lm, f"model_{step}")
 
         model.train()
         optimizer.zero_grad()

@@ -13,9 +13,9 @@ class DataLoaderLite:
         self.split = split
         self.dataset_name = config.dataset_name
         assert self.split in {"train", "val"}
-        assert self.dataset_name in {"edu_fineweb10B", "tiny_shakespeare"}
+        assert self.dataset_name in {"fineweb10B", "tiny_shakespeare"}
 
-        if config.dataset_name == "edu_fineweb10B":
+        if config.dataset_name == "fineweb10B":
             self.initialize_edu_fineweb10B()
         elif config.dataset_name == "tiny_shakespeare":
             assert (
@@ -30,7 +30,7 @@ class DataLoaderLite:
 
     def initialize_edu_fineweb10B(self):
         # get the shard filenames
-        data_root = "data/edu_fineweb10B"
+        data_root = "data/data/fineweb10B"
         shards = os.listdir(data_root)
         shards = [s for s in shards if self.split in s]
         shards = sorted(shards)
@@ -62,7 +62,7 @@ class DataLoaderLite:
         self.current_position = 0
 
     def reset(self):
-        if self.dataset_name == "edu_fineweb10B":
+        if self.dataset_name == "fineweb10B":
             # state, init at shard zero
             self.current_shard = 0
             self.tokens = self.load_tokens(self.shards[self.current_shard])
@@ -80,7 +80,7 @@ class DataLoaderLite:
         self.current_position += B * T * self.num_processes
         # if loading the next batch would be out of bounds, advance to next shard
         if self.current_position + (B * T * self.num_processes + 1) > len(self.tokens):
-            if self.dataset_name == "edu_fineweb10B":
+            if self.dataset_name == "fineweb10B":
                 self.current_shard = (self.current_shard + 1) % len(self.shards)
                 self.tokens = self.load_tokens(self.shards[self.current_shard])
             self.current_position = B * T * self.process_rank

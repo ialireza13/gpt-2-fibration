@@ -1,10 +1,10 @@
 """
-FineWeb-Edu dataset (for srs pretraining)
-https://huggingface.co/datasets/HuggingFaceFW/fineweb-edu
+FineWeb dataset (for srs pretraining)
+https://huggingface.co/datasets/HuggingFaceFW/fineweb
 Downloads and tokenizes the data and saves data shards to disk.
 Run simply as:
 $ python fineweb.py
-Will save shards to the local directory "edu_fineweb10B".
+Will save shards to the local directory "fineweb10B".
 """
 
 import os
@@ -15,7 +15,7 @@ from datasets import load_dataset
 from tqdm import tqdm
 
 # ------------------------------------------
-local_dir = "data/edu_fineweb10B"
+local_dir = "data/fineweb10B"
 remote_name = "sample-10BT"
 shard_size = int(1e8)  # 100M tokens per shard
 
@@ -45,7 +45,7 @@ def main():
 
     # stream dataset (requires login if gated)
     fw = load_dataset(
-        "HuggingFaceFW/fineweb-edu",
+        "HuggingFaceFW/fineweb",
         remote_name,
         split="train",
         streaming=True,
@@ -71,7 +71,7 @@ def main():
             else:
                 split = "val" if shard_index == 0 else "train"
                 filename = os.path.join(
-                    DATA_CACHE_DIR, f"edufineweb_{split}_{shard_index:06d}"
+                    DATA_CACHE_DIR, f"fineweb_{split}_{shard_index:06d}"
                 )
                 remainder = shard_size - token_count
                 progress_bar.update(remainder)
@@ -88,7 +88,7 @@ def main():
         if token_count != 0:
             split = "val" if shard_index == 0 else "train"
             filename = os.path.join(
-                DATA_CACHE_DIR, f"edufineweb_{split}_{shard_index:06d}"
+                DATA_CACHE_DIR, f"fineweb_{split}_{shard_index:06d}"
             )
             write_datafile(filename, all_tokens_np[:token_count])
 

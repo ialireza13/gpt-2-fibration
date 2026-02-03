@@ -4,10 +4,6 @@ This repository provides code for training and evaluating GPT-2 models. It suppo
 
 **Acknowledgement:** This codebase is heavily based on the accompanying materials for the YouTube video "[Let's reproduce GPT-2 (124M)](https://www.youtube.com/watch?v=l8pRSuU81PU&t=1787s)" by Andrej Karpathy. The `hellaswag.py` and `fineweb.py` files have been minimally edited from the original code provided in the video's context.
 
-<p align="center">
-  <img src="img/gpt-demo.gif" alt="Alt text" />
-</p>
-
 
 ## Files
 

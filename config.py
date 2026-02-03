@@ -1,17 +1,17 @@
 class Config:
     def __init__(self, data_manager):
-        self.batch_size = 16
+        self.batch_size = 64
         self.total_batch_size = 2**19
         self.max_lr = 6e-4
         self.min_lr = self.max_lr * 0.1
-        self.warmup_steps = 715
+        self.warmup_steps = 700
         self.max_steps = 19073
         self.block_size = 1024
-        self.log_step = 250
-        self.model_output_step = 250
+        self.log_step = 1907
+        self.model_output_step = 1907
         self.num_return_sequences_sample_training = 4
         self.max_length_sample_training = 32
-        self.dataset_name = "edu_fineweb10B"  # "edu_fineweb10B" or "tiny_shakespeare"
+        self.dataset_name = "fineweb10B"
         self.do_evaluate_benchmark = True
         self.data_manager = data_manager
 
