@@ -4,7 +4,7 @@ import math
 from torch.nn.parallel import DistributedDataParallel as DDP
 import os
 from data.hellaswag import evaluate_benchmark
-from model.model import GPT, GPTConfig
+from model.model import GPT, GPTConfig, GPTSeparateAttention
 from manager.device_manager import DeviceManager
 from config import Config
 from manager.log_manager import LogManager
@@ -85,7 +85,9 @@ if __name__ == "__main__":
 
     # we overwrite the vocab size (froom 50257 to 50304) to make the number "nice"
     # (it can be divided by many powers of 2)
-    model = GPT(GPTConfig(vocab_size=50304))
+    # model = GPT(GPTConfig(vocab_size=50304))
+    model = GPTSeparateAttention(GPTConfig(vocab_size=50304))
+    
     model.to(dm.device)
     use_compile = False
     if torch.cuda.is_available() and use_compile:
