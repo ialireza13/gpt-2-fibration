@@ -9,3 +9,4 @@ download_backup.sh
 gpt-venv
 *.pt
 .DS_Store
+*.npy
