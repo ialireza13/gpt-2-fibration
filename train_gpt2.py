@@ -45,13 +45,17 @@ def evaluate_validation(step, model, data_manager, log_manager):
         log_manager.to_file(step, "val", val_loss_accum)
 
 
-def save_model(model, log_manager, filename):
+def save_model(model, optimizer, log_manager, step, filename):
     checkpoint_path = os.path.join(log_manager.dir, f"{filename}.pt")
     checkpoint = {
         "model": model.state_dict(),
         "config": model.config,
         "step": step,
+        "optimizer": optimizer.state_dict(),
+        "rng_state": torch.get_rng_state(),
     }
+    if torch.cuda.is_available():
+        checkpoint["cuda_rng_state"] = torch.cuda.get_rng_state_all()
     torch.save(checkpoint, checkpoint_path)
 
 
@@ -88,6 +92,21 @@ if __name__ == "__main__":
     # model = GPT(GPTConfig(vocab_size=50304))
     model = GPTSeparateAttention(GPTConfig(vocab_size=50304))
     
+    resume_checkpoint = None
+    if config.continue_from:
+        resume_checkpoint = torch.load(config.continue_from, map_location=dm.device, weights_only=False)
+        config.continue_from_step = resume_checkpoint.get("step", 0)
+        # Checkpoint was saved after completing step T; resume from step T+1 so we don't redo step T
+        resume_start_step = config.continue_from_step + 1
+        model_config = resume_checkpoint["config"]
+        model = GPTSeparateAttention(model_config)
+        model.load_state_dict(resume_checkpoint["model"])
+        train_loader.seek_to_step(resume_start_step, config.grad_accum_steps)
+        if "rng_state" in resume_checkpoint:
+            torch.set_rng_state(resume_checkpoint["rng_state"])
+        if torch.cuda.is_available() and "cuda_rng_state" in resume_checkpoint:
+            torch.cuda.set_rng_state_all(resume_checkpoint["cuda_rng_state"])
+
     model.to(dm.device)
     use_compile = False
     if torch.cuda.is_available() and use_compile:
@@ -100,11 +119,20 @@ if __name__ == "__main__":
         weight_decay=0.1, learning_rate=3e-4, device=dm.device
     )
 
+    if resume_checkpoint is not None and "optimizer" in resume_checkpoint:
+        optimizer.load_state_dict(resume_checkpoint["optimizer"])
+
     # object use to print to file metrics (train, validation, benchmark performance)
     lm = LogManager(dir="log")
+    
+    if config.continue_from:
+        lr = get_lr(resume_start_step, config)
+        for param_group in optimizer.param_groups:
+            param_group["lr"] = lr
 
-    # training loop
-    for step in range(config.max_steps):
+    # training loop (when resuming, start from continue_from_step + 1 since checkpoint is post-step)
+    start_step = config.continue_from_step + 1 if config.continue_from else 0
+    for step in range(start_step, config.max_steps):
         t0 = time.time()
         last_step = step == config.max_steps - 1
 
@@ -124,7 +152,7 @@ if __name__ == "__main__":
             evaluate_validation(step, model, dm, lm)
 
         if step > 0 and (step % config.model_output_step == 0 or last_step):
-            save_model(model, lm, f"model_{step}")
+            save_model(model, optimizer, lm, step, f"model_{step}")
 
         model.train()
         optimizer.zero_grad()

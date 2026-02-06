@@ -20,6 +20,9 @@ class Config:
         self.grad_accum_steps = self.total_batch_size // (
             self.batch_size * self.block_size * self.data_manager.ddp_world_size
         )
+        
+        self.continue_from = None
+        self.continue_from_step = 0
 
         if self.data_manager.master_process:
             print("[Config] Computing gradient accumulation steps")
