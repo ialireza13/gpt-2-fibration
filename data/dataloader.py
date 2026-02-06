@@ -25,7 +25,7 @@ class DataLoaderLite:
 
     def load_tokens(self, filename):
         npt = np.load(filename)
-        ptt = torch.tensor(npt, dtype=torch.long)
+        ptt = torch.tensor(npt.astype(np.float32), dtype=torch.long)
         return ptt
 
     def initialize_edu_fineweb10B(self):
@@ -69,6 +69,14 @@ class DataLoaderLite:
             self.current_position = self.B * self.T * self.process_rank
         else:
             self.current_position = 0
+
+    def seek_to_step(self, step, grad_accum_steps):
+        """Advance the dataloader so the next next_batch() corresponds to the given step.
+        Call this when resuming from a checkpoint so training continues from the right data position.
+        """
+        num_batches_to_skip = step * grad_accum_steps
+        for _ in range(num_batches_to_skip):
+            self.next_batch()
 
     def next_batch(self):
         B, T = self.B, self.T
