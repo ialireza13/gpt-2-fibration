@@ -25,3 +25,4 @@ transformers==4.53.2
 typing_extensions==4.14.1
 urllib3==2.5.0
 datasets==4.1.1
+scikit-learn==1.7.1
