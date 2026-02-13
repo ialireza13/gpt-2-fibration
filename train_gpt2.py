@@ -151,7 +151,7 @@ if __name__ == "__main__":
                 evaluate_benchmark(step, model, dm, lm)
             evaluate_validation(step, model, dm, lm)
 
-        if step > 0 and (step % config.model_output_step == 0 or last_step):
+        if step % config.model_output_step == 0 or last_step:
             save_model(model, optimizer, lm, step, f"model_{step}")
 
         model.train()
@@ -207,7 +207,7 @@ if __name__ == "__main__":
         )
         if dm.master_process:
             print(
-                f"step {step} | loss: {loss_accum:.4f} | lr: {lr:.3e} | norm: {norm:.4f} | time: {dt:.2f} ms | tokens/sec: {tokens_per_second:.2f}"
+                f"step {step} | loss: {loss_accum:.4f} | lr: {lr:.3e} | norm: {norm:.4f} | time: {dt:.2f} ms | tokens/sec: {tokens_per_second:.2f}", flush=True
             )
             lm.to_file(step, "train", loss_accum)
 
