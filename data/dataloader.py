@@ -61,6 +61,22 @@ class DataLoaderLite:
 
         self.current_position = 0
 
+    def num_batches(self):
+        """Total number of batches in one full pass over the data (per process).
+        Does not consume the iterator or change state.
+        """
+        B, T = self.B, self.T
+        if self.dataset_name == "tiny_shakespeare":
+            # Single contiguous tensor; advance by B*T per batch (single process).
+            return max(0, (len(self.tokens) - 1) // (B * T))
+        # fineweb10B: sum batches over all shards for this process.
+        total = 0
+        for shard_path in self.shards:
+            tokens = self.load_tokens(shard_path)
+            n = len(tokens) - B * T - 1 - B * T * self.process_rank
+            total += max(0, n // (B * T * self.num_processes) + 1)
+        return total
+
     def reset(self):
         if self.dataset_name == "fineweb10B":
             # state, init at shard zero
