@@ -221,9 +221,6 @@ for model_dir in model_dirs:
 	separate_model = GPTSeparateAttention(model_config)
 	separate_model.load_state_dict(checkpoint["model"])
 
-	separate_model.to(dm.device)
-	separate_model.eval()
-
 	init_params = number_of_params(separate_model)
 	
 	separate_model.to(dm.device)
